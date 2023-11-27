@@ -1,0 +1,498 @@
+---
+title: "9_CISI_actual"
+author: "tsuyoshi"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    df_print: paged
+    code_folding: "hide"
+    pandoc_args: [ 
+      "--output=9_CISI_actual.html" 
+    ]
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+
+---
+
+### setup
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(ComplexHeatmap)
+library(common)
+library(colorRamp2)
+
+```
+
+
+### input data
+```{r specify_paths_1}
+
+project.path <- "/mnt/projects/data/publication/9_CISI_actual"
+# Specify input paths
+genewise.path <- file.path(project.path,"result_genewise.csv")
+cisich.path <- file.path(project.path,"result_cisich_corr.csv")
+summary.path <- file.path(project.path,"result_summary.csv")
+```
+
+```{r}
+df_summary <- read.csv(summary.path,  row.names = 'X') 
+df_genewise <- read.csv(genewise.path, row.names = 'X')
+df_cisich <- read.csv(cisich.path,  row.names = 'X')
+```
+
+
+```{r reshape_df}
+# pivot longer for ggplot
+df_summary$condition <- rownames(df_summary)
+df_summary <-df_summary %>% 
+  pivot_longer(c('Gene_average','Gene_minimum','Cell_average'), 
+               names_to = "value_type", values_to = "value")
+
+df_genewise$condition <- rownames(df_genewise)
+df_genewise <- df_genewise %>% 
+  pivot_longer(!condition, names_to = "marker", values_to = "correlation")
+
+
+df_cisich$cisi_channel <- rownames(df_cisich)
+df_cisich <- df_cisich %>%
+  pivot_longer(!cisi_channel, names_to = "condition", values_to = "correlation")
+```
+
+### plot summary
+```{r, results="asis",fig.height = 3, fig.width =10, fig.align = "center"}
+ggplot(df_summary, 
+       aes(x = condition, y = value, fill = condition)) + 
+  facet_wrap(~value_type) +
+  geom_bar(stat = "identity") + theme_bw() + xlab(NULL) + 
+  theme(axis.text.x=element_blank())
+```
+
+### plot all conditions for all proteins
+```{r, results="asis",fig.height = 3, fig.width =8, fig.align = "center"}
+ggplot(df_genewise, 
+       aes(x = reorder(marker, correlation), y = correlation, fill = condition, group = condition)) +
+  geom_col(position =  position_dodge2(padding = 0.2),width = 0.7 ) + theme_bw() +
+  xlab("marker") + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+### plot Actual_Ahat for all proteins
+```{r, results="asis",fig.height = 3, fig.width =6, fig.align = "center"}
+ggplot(df_genewise[df_genewise$condition == "Actual_Ahat",], 
+       aes(x = reorder(marker, correlation, fill = "grey"), y = correlation)) +
+  geom_col(width = 0.7 ) + theme_bw() +
+  xlab("marker") + theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+```
+
+
+### read A and Ahat
+```{r}
+# read A
+A_path <- "/mnt/projects/data/publication/9_CISI_actual/A.csv"
+A <- read.csv(A_path,row.names = 'X') %>% as.matrix()
+
+# read Ahat
+Ahat_path <- "/mnt/projects/data/publication/9_CISI_actual/Ahat.csv"
+Ahat <- read.csv(Ahat_path,row.names = 'X') %>% as.matrix()
+```
+
+### plot A and Ahat
+```{r, results="asis",fig.height = 5, fig.width = 7, fig.align = "center"}
+
+
+h1 <- Heatmap(t(A), 
+              col = colorRamp2(c(0, 0.5, 1), c("navy", "white", "firebrick2")),
+              heatmap_legend_param = list(title = "A", direction = "vertical"),
+              cluster_columns = F, column_title = 'A: original',
+              top_annotation = columnAnnotation(
+                corr = anno_barplot(df_cisich[df_cisich$condition=='actual_vs_simulated_A',]$correlation),
+                height = unit(3, "cm"),show_annotation_name = FALSE))
+h2 <- Heatmap(t(Ahat), 
+              col = colorRamp2(c(0, 0.5*max(Ahat), max(Ahat)), c("navy", "white", "firebrick2")),
+              heatmap_legend_param = list(title = "Ahat", direction = "vertical"),
+              cluster_columns = F, column_title = 'Ahat: reweighted',
+              top_annotation = columnAnnotation(
+                corr = anno_barplot(df_cisich[df_cisich$condition=='actual_vs_simulated_Ahat',]$correlation, 
+                                    axis = F),
+                height = unit(3, "cm")))
+h1 + h2
+# draw(h_list, ht_gap = unit(0.5, "cm"))
+
+```
+
+## single-cell analyses
+
+### load additional libraries
+```{r}
+library(zellkonverter)
+library(SingleCellExperiment)
+library(scater)
+library(uwot)
+library(data.table)
+library(RColorBrewer)
+library(reshape2)
+library(Rphenograph)
+library(viridis)
+```
+
+### util functions
+```{r util_functions}
+# conver factor into character in DataFrame (for rbind different sces)
+factor2character <- function(DF1){
+  DF2 <- DataFrame(lapply(DF1, function(c) {
+    if (class(c) == "factor") c <- as.character(c)
+    c
+  }))
+  DF2
+}
+
+# get df of cells x reducedDim from sce. Cells are repeated for ngenes times.
+get_df <- function(sce, assay = "exprs", long_genes = TRUE) {
+    dr <- do.call("cbind", reducedDims(sce))
+    foo <- sapply(reducedDims(sce), ncol)
+    colnames(dr) <- paste0(rep.int(names(foo), foo), sapply(foo, seq_len))
+    df <- data.frame(dr, colData(sce), t(assay(sce, assay)), check.names = FALSE)
+    if (long_genes){
+      df <- reshape2::melt(df, id.vars = c(colnames(colData(sce)), colnames(dr)))
+    }
+    df
+}
+
+# compute scaled expressions for visualization
+scale_sce <- function(sce, assay = "exprs", percent = 0.9999){
+  # assay(sce, "exprs") <- asinh(assay(sce, "counts") / 2)
+  es <- assay(sce, assay)
+  qs <- rowQuantiles(es, probs = c(0.0, percent))
+  x <- (es - qs[, 1]) / (qs[, 2] - qs[, 1])
+  x[x < 0] <- 0; x[x > 1] <- 1
+  return(x)
+}
+
+# plot reduced dimensions with facets
+plot_dr <- function(sce, assay = "scaled", dr_type = "TSNE", facet = "variable"){
+    plot <- data.table(get_df(sce, assay = assay)) %>%
+    ggplot(aes(get(paste0(dr_type,1)), get(paste0(dr_type,2)), col = value)) +
+    geom_point(alpha=0.99, size=0.1) + 
+    facet_wrap(facet, ncol = 5) +
+    scale_color_gradientn(colours=rev(brewer.pal(11, 'Spectral')))+
+    theme_void() + theme(aspect.ratio = 1, strip.text.x = element_text(size = 12))
+    plot
+}
+
+# plot reduced dimensions with colors
+plot_dr2 <- function(sce, assay = "scaled", dr_type = "TSNE", colourby = "tissue", legendPsize = 5){
+    plot <- data.table(get_df(sce, assay = assay, long_genes = FALSE)) %>%
+    ggplot(aes(get(paste0(dr_type,1)), get(paste0(dr_type,2)), col = get(colourby))) +
+    geom_point(alpha=0.99, size=0.1) + 
+    #scale_color_viridis(discrete = TRUE)+
+    theme_void() + theme(aspect.ratio = 1,strip.text.x = element_text(size = 8))+ 
+    guides(colour = guide_legend(override.aes = list(size=legendPsize)))
+    plot
+}
+
+``` 
+
+### set input
+```{r specify_paths_2}
+# Specify input paths
+sce_gt.path <- file.path(project.path,"sce/sce_gt.h5ad")
+sce_dc_Ahat.path <- file.path(project.path,"sce/sce_dc_Actual_Ahat.h5ad")
+
+sce_gt.path <- file.path("/mnt/projects/data/11_realCISI_5tissues/sce_gt.h5ad")
+sce_dc_Ahat.path <- file.path("/mnt/projects/data/14_recalc_X/sce_dc.h5ad")
+
+# also read original sce for panCK signals
+sce_ori.path <- file.path("/mnt/projects/data/0_preprocess_th186/processed","filtered_sce.h5ad")
+
+```
+
+### input sces
+```{r}
+# read h5ad to sce
+sce_gt <- readH5AD(sce_gt.path) 
+sce_dc_Ahat <- readH5AD(sce_dc_Ahat.path)
+
+# combine sces into list
+SCE <- list(sce_gt,sce_dc_Ahat)# list(sce_gt,sce_dc,sce_dc_Ahat)
+names(SCE) <- c("ground_truth", "decompressed_reweightedA" )
+
+# ori is for panCK data
+sce_ori <- readH5AD(sce_ori.path)
+```
+```{r}
+# prepare panck data
+panck <- sce_ori["panCK",match(colnames(sce_gt),colnames(sce_ori))]
+colData(panck) <- factor2character(colData(panck))
+```
+
+
+```{r}
+# convert factor in coldata into character and rbind panCK data
+SCE <- lapply(SCE, function(sce) {
+  colData(sce) <- factor2character(colData(sce) )
+  sce <- rbind(sce, panck)
+})
+
+```
+
+
+
+### transform and scale counts for UMAP and visualisation
+```{r add_exprs_scaled}
+SCE <- lapply(SCE, function(sce) {
+              assay(sce, "exprs") <- asinh(counts(sce)/1)
+              assay(sce, "scaled") <- scale_sce(sce)
+              sce
+            })
+
+```
+
+
+### run UMAP
+```{r runUMAP}
+SCE <- lapply(SCE, function(sce){
+  set.seed(230905)
+  sce <- runUMAP(sce, exprs_values="exprs")
+  sce
+})
+  
+# sce <- runTSNE(sce, exprs_values="exprs")
+```
+
+### run Phenograph
+```{r runPhenograph}
+SCE <- lapply(SCE, function(sce){
+  set.seed(230907) # need to seed every calculation 
+  pg_res <- Rphenograph(data = t(assay(sce,"exprs")), k = 15)
+  sce$PG <- factor(pg_res[[2]]$membership)
+  sce
+})
+
+```
+
+### plot clusters
+```{r}
+HM <- lapply(SCE, function(sce){
+    summary_dat = data.table(get_df(sce,assay = "scaled"))[,list(
+      median_val = median(value), mean_val = mean(value), cell_cluster=.N), by=.(variable,PG)]
+  #median values per cluster
+  hm_dat = dcast.data.table(data =summary_dat, formula = 'PG ~ variable', value.var = 'median_val')#'median_val'
+  group_levels = factor(hm_dat$PG)
+  trownames = hm_dat$PG
+  # Convert to a matrix
+  hm_dat = as.matrix(hm_dat[,-1,with=F])
+  row.names(hm_dat) = trownames
+  hm_dat
+})
+```
+
+```{r warning = FALSE, fig.width=6, fig.height=7}
+Heatmap(HM$ground_truth, name = "ground_truth", 
+        col = viridis::magma(11), rect_gp = gpar(col = "white", lwd = 1),
+        right_annotation = rowAnnotation(
+          Ncells = anno_barplot(as.vector(table(as.integer(SCE$ground_truth$PG))))))
+
+
+Heatmap(HM$decompressed_reweightedA, name = "decompressed\nreweightedA", 
+        col = viridis::magma(11), rect_gp = gpar(col = "white", lwd = 1),
+        right_annotation = rowAnnotation(
+          Ncells = anno_barplot(as.vector(table(as.integer(SCE$decompressed_reweightedA$PG))))))
+```
+
+### annotate clusters
+```{r}
+# annotation for GT
+anno_1 <- list(B = c(29,27,33),
+               TandB = c(40),
+               Th = c(34,26,20,4),
+               Tc = c(11),
+               plasma = c(23,18,14),
+               pDC = c(21),
+               migDC = c(30),
+               Macrophage = c(24,15,1),
+               Neutrophil = c(17,16,12),
+               NK = c(19),
+               Endothelial = c(13,25,7,6),
+               Fibroblast = c(9,2,3,8),
+               Tumor = c(32,36,39,38,37,35,31,22),
+               Ki67 = c(10),
+               Unidentified = c(5,28))
+# initialize annotation
+SCE$ground_truth$annotation <- "not_annotated"
+
+# assign to sce$annotation
+for (i in seq_along(anno_1)){
+  SCE$ground_truth[,SCE$ground_truth$PG %in% anno_1[[i]]]$annotation <- names(anno_1)[[i]]
+}
+```
+
+```{r}
+# annotation for decompressed_reweightedA
+anno_2 <- list(B = c(24,23,27,19),
+               TandB = c(30),
+               Th = c(12,25,35),
+               Tc = c(20,3),
+               plasma = c(21,22),
+               pDC = c(17),
+               migDC = c(34),
+               Macrophage = c(13,2,8),
+               Neutrophil = c(15),
+               NK = c(28),
+               Endothelial = c(6),
+               Fibroblast = c(4,7,5),
+               Tumor = c(31,32,29,9,33,11),
+               Ki67 = c(16,26),
+               Unidentified = c(18,1,14,10))
+
+# initialize annotation
+SCE$decompressed_reweightedA$annotation <- "not_annotated"
+
+# assign to sce$annotation
+for (i in seq_along(anno_2)){
+  SCE$decompressed_reweightedA[,SCE$decompressed_reweightedA$PG %in% anno_2[[i]]]$annotation <- names(anno_2)[[i]]
+}
+```
+```{r prep_annotation}
+# prepare annotation of PG of Gt to its celltype annotation
+GT_PG_to_GT_Anno <- 1:length(unique(SCE$ground_truth$PG))
+for (i in seq_along(anno_1)){
+  GT_PG_to_GT_Anno[match(anno_1[[i]], GT_PG_to_GT_Anno)] <- names(anno_1)[[i]]
+}
+
+DC_PG_to_DC_Anno <- 1:length(unique(SCE$decompressed_reweightedA$PG))
+for (i in seq_along(anno_2)){
+  DC_PG_to_DC_Anno[match(anno_2[[i]], DC_PG_to_DC_Anno)] <- names(anno_2)[[i]]
+}
+
+# prepare annotation for ncells
+GT_PG_Ncells_Anno = row_anno_barplot(as.vector(table(as.integer(SCE$ground_truth$PG))))
+DC_PG_Ncells_Anno = row_anno_barplot(as.vector(table(as.integer(SCE$decompressed_reweightedA$PG))))
+```
+
+### plot annotaated celltypes on heatmap of median expression per cluster
+```{r, fig.width=8, fig.height=8}
+Heatmap(HM$ground_truth, name = "ground_truth", 
+              col = viridis::viridis(11), rect_gp = gpar(col = "white", lwd = 1), 
+              right_annotation = rowAnnotation(GT_anno = anno_text(GT_PG_to_GT_Anno),
+                                               Ncells = GT_PG_Ncells_Anno))
+Heatmap(HM$decompressed_reweightedA, name = "decompressed\nreweightedA", 
+              col = viridis::viridis(11), rect_gp = gpar(col = "white", lwd = 1), 
+              right_annotation = rowAnnotation(DC_anno = anno_text(DC_PG_to_DC_Anno),
+                                               Ncells = DC_PG_Ncells_Anno))
+```
+
+### plot annotaated celltypes on umap
+```{r, fig.width=8, fig.height=8}
+plot_dr2(SCE$ground_truth, assay = "scaled", dr_type = "UMAP", colourby = "annotation")
+plot_dr2(SCE$decompressed_reweightedA, assay = "scaled", dr_type = "UMAP", colourby = "annotation")
+```
+
+
+### heatmaps of matching ground truth cell type and decompressed cell type
+```{r}
+# table with row of GT celltype and col of DC celltype
+mat1 <- table(SCE$ground_truth$annotation, SCE$decompressed_reweightedA$annotation) %>%
+  prop.table(margin = 1)
+
+mat2 <- table(SCE$ground_truth$annotation, SCE$decompressed_reweightedA$annotation) %>%
+  prop.table(margin = 2)
+
+```
+```{r, fig.width=7, fig.height=7}
+plot_colwise_Heatmap <-
+  function(mat2, legend_title ,row_title, col_title){
+    hs <- NULL
+    for (i in 1:ncol(mat2)){
+      if (i == 1){
+        h <- Heatmap(mat2[,i],  name = colnames(mat2)[i],
+            cluster_columns = F, cluster_rows = F, border_gp = gpar(col = "black", lty = 1),
+            width = 1*unit(5, "mm"), height = ncol(mat2)*unit(5, "mm"),
+            col = colorRamp2(c(0, 1), c("white", "navy")),show_heatmap_legend = (i==1),
+            heatmap_legend_param = list(title = legend_title),
+            row_title = row_title, row_title_side = "left")
+      } else if (i == as.integer(ncol(mat2)/2)){
+        h <- Heatmap(mat2[,i],  name = colnames(mat2)[i],
+            cluster_columns = F, cluster_rows = F, border_gp = gpar(col = "black", lty = 1),
+            width = 1*unit(5, "mm"), height = ncol(mat2)*unit(5, "mm"),
+            col = colorRamp2(c(0, 1), c("white", "navy")),show_heatmap_legend = (i==1),
+            heatmap_legend_param = list(title = legend_title),
+            column_title = col_title, column_title_side = "bottom")
+      }else{
+        h <- Heatmap(mat2[,i],  name = colnames(mat2)[i],
+            cluster_columns = F, cluster_rows = F, border_gp = gpar(col = "black", lty = 1),
+            width = 1*unit(5, "mm"), height = ncol(mat2)*unit(5, "mm"),
+            col = colorRamp2(c(0, 1), c("white", "navy")),show_heatmap_legend = (i==1),
+            heatmap_legend_param = list(title = legend_title)
+            )
+      }
+      hs <- hs + h
+    }
+  return(hs)
+  }
+  
+plot_rowwise_Heatmap <-
+  function(mat1, legend_title ,row_title, col_title){
+    hs <- NULL
+    for (i in 1:nrow(mat1)){
+      if (i == 1){
+        h <- Heatmap(mat1[i,],  name = rownames(mat1)[i],
+            cluster_columns = F, cluster_rows = F, border_gp = gpar(col = "black", lty = 1),
+            width = 1*unit(5, "mm"), height = nrow(mat1)*unit(5, "mm"),
+            col = colorRamp2(c(0, 1), c("white", "navy")),show_heatmap_legend = (i==1),
+            heatmap_legend_param = list(title = legend_title),
+            row_title = row_title, row_title_side = "left")
+      } else if (i == as.integer(nrow(mat1)/2)){
+        h <- Heatmap(mat1[i,],  name = rownames(mat1)[i],
+            cluster_columns = F, cluster_rows = F, border_gp = gpar(col = "black", lty = 1),
+            width = 1*unit(5, "mm"), height = nrow(mat1)*unit(5, "mm"),
+            col = colorRamp2(c(0, 1), c("white", "navy")),show_heatmap_legend = (i==1),
+            heatmap_legend_param = list(title = legend_title),
+            column_title = col_title, column_title_side = "bottom")
+      }else{
+        h <- Heatmap(mat1[i,],  name = rownames(mat1)[i],
+            cluster_columns = F, cluster_rows = F, border_gp = gpar(col = "black", lty = 1),
+            width = 1*unit(5, "mm"), height = nrow(mat1)*unit(5, "mm"),
+            col = colorRamp2(c(0, 1), c("white", "navy")),show_heatmap_legend = (i==1),
+            heatmap_legend_param = list(title = legend_title)
+            )
+      }
+      hs <- hs + h
+    }
+  return(hs)
+  }
+
+
+plot_colwise_Heatmap(mat2,"proportion\ndecompressed","Ground_truth","Decompressed")
+plot_rowwise_Heatmap(mat1, "proportion\ngeound_truth","Decompressed","Ground_truth")
+```
+
+
+### calculate F1 Recall Precision
+```{r}
+recall <- diag(mat1)
+precision <- diag(mat2)
+f1 <- 2*recall*precision/(recall + precision)
+
+df <- data.frame(recall = recall, precision = precision, f1 = f1)
+df$annotation <- rownames(df)
+df
+```
+
+```{r, results="asis",fig.height = 3, fig.width =6, fig.align = "center"}
+ggplot(df %>% pivot_longer(!annotation, names_to = "value_type", values_to = "score"),
+       aes(x= annotation, y = score, fill = value_type))+  
+  geom_col(width = 0.7, position = position_dodge2() ) + theme_bw() +
+  xlab("annotation") + theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+
+cat("Mean F1 score: ",mean(df$f1),"\n")
+cat("Mean Recall: ",mean(df$recall),"\n")
+cat("Mean Precision: ",mean(df$precision),"\n")
+```
+
+
+
+
+

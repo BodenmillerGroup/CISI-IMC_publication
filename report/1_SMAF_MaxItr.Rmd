@@ -1,0 +1,64 @@
+---
+title: "1_SMAF_MaxItr"
+author: "tsuyoshi"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    df_print: paged
+    code_folding: "hide"
+    pandoc_args: [ 
+      "--output=1_SMAF_MaxItr.html" 
+    ]
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+---
+
+## Setup
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r library, message = FALSE}
+library(ggplot2)
+library(RColorBrewer)
+```
+
+```{r set_path}
+input_path <- "/mnt/projects/data/publication/1_SMAF_maxItr"
+```
+
+## Read sumary table
+
+```{r read_df}
+fn <- file.path(input_path,"result.csv")
+df <- read.csv(fn, header = T)
+```
+
+```{r set_to_factor}
+#set as factor to facet on these params
+colnames_tofactor <- c("ldaW","ldaU","num_blocks_W","replicate", "k")
+df[,colnames_tofactor] <- lapply(df[,colnames_tofactor] , factor)
+
+df
+```
+
+### Lasso for U->W
+```{r samf_100itr_lasso, fig.height = 7, fig.width = 8, fig.align = "center"}
+ggplot(df[df$methodW=="lasso",], aes(x = iteration, y = U_l1_mean, colour = num_blocks_W)) +
+      geom_point(size=0.1) + theme_bw() +facet_grid(vars(ldaU),vars(ldaW),labeller = 'label_both') + 
+      ylab("U_l1_mean") + ggtitle(paste("U_l1_mean", "lasso", sep = "/ ")) + 
+      scale_colour_brewer(palette = "RdBu") 
+
+```
+
+### Omp_fixedk for U->W
+```{r samf_100itr_ompfixedk, fig.height = 8, fig.width = 6, fig.align = "center"}
+ggplot(df[df$methodW=="omp_fixedk",], aes(x = iteration, y = U_l1_mean)) +
+      geom_point(size=0.1) + theme_bw() +facet_grid(ldaU~k,labeller = 'label_both') + 
+      labs(y="U_l1_mean") + ggtitle(paste("U_l1_mean", "omp_fixedk", sep = "/ ")) + 
+      scale_colour_brewer(palette = "RdBu") 
+
+```
+
+
+

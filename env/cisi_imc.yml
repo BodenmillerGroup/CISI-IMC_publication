@@ -1,0 +1,18 @@
+name: test_cisi_imc_env
+channels:
+  - defaults
+dependencies:
+  - ipykernel
+  - jinja2
+  - tifffile
+  - pandoc
+  - pip
+  - python
+  - scikit-image
+  - pip:
+      - anndata==0.8.0
+      - matplotlib==3.7.1
+      - spams==2.6.5.4
+      - scipy==1.10.1
+      - scikit-learn==1.2.2      
+prefix: /home/ubuntu/miniconda3/envs/test_cisi_imc_env

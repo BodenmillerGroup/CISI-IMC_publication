@@ -1,0 +1,259 @@
+---
+title: "2_SMAF_parameters"
+author: "tsuyoshi"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    df_print: paged
+    code_folding: "hide"
+    pandoc_args: [ 
+      "--output=2_SMAF_parameters.html" 
+    ]
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+```{r library}
+library(ggplot2)
+library(cowplot)
+library(dplyr)
+library(metan)
+library(tidyr)
+library(lessR)
+```
+
+
+### set up
+```{r specify_paths}
+# Set input path to the result
+input_path <- "/mnt/projects/data/publication/2_SMAF_parameters"
+U_path <- file.path(input_path, "U")
+```
+
+#### Read summary tables
+```{r read_df}
+fn <- file.path(input_path,"result.csv")
+df <- read.csv(fn, header = T)
+
+col_names <- c("methodW","ldaU","num_blocks_W","ldaW","k")
+df[,col_names] <- lapply(df[,col_names] , factor)
+df
+
+```
+
+### General analysis
+
+#### 1. OMP_fixedk
+```{r plot_results1, fig.height = 3, fig.width = 10, fig.align = "center"}
+
+cur_df <- df[df$methodW=="omp_fixedk",]
+p1 <- ggplot(cur_df, aes(x = ldaU, y = U_l0_mean, colour = k)) + geom_point(size = 1) +
+  theme_bw() + ylim(0,max(cur_df$U_l0_mean)) + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p2 <- ggplot(cur_df, aes(x = ldaU, y = d_modules, colour = k)) + geom_point(size = 1)  +
+  theme_bw() + ylim(0,max(cur_df$d_modules)) + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p3 <- ggplot(cur_df, aes(x = ldaU, y = SMAF_W_l0_mean, colour = k)) + geom_point(size = 1) +
+  theme_bw() + ylim(0,max(cur_df$SMAF_W_l0_mean)) + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p4 <- ggplot(cur_df, aes(x = ldaU, y = SMAF_Fit, colour = k)) + geom_point(size = 1)  +
+  theme_bw() + ylim(0,1) + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+plot_grid(p1,p2,p3,p4, nrow=1)
+```
+
+
+
+#### 2. Lasso
+```{r plot_results2, fig.height = 6, fig.width = 11, fig.align = "center"}
+
+cur_df <- df[df$methodW=="lasso",]
+p1 <- ggplot(cur_df, aes(x = ldaU, y = U_l0_mean, colour = ldaW)) + geom_point(size = 1) +
+  theme_bw() + ylim(0,max(cur_df$U_l0_mean)) + theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  facet_wrap(~num_blocks_W, labeller = "label_both")
+
+p2 <- ggplot(cur_df, aes(x = ldaU, y = d_modules, colour = ldaW)) + geom_point(size = 1) +
+  theme_bw() + ylim(0,max(cur_df$d_modules)) + theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  facet_wrap(~num_blocks_W, labeller = "label_both")
+
+p3 <- ggplot(cur_df, aes(x = ldaU, y = SMAF_W_l0_mean, colour = ldaW)) + geom_point(size = 1) +
+  theme_bw() + ylim(0,max(cur_df$SMAF_W_l0_mean)) + theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  facet_wrap(~num_blocks_W, labeller = "label_both")
+
+p4 <- ggplot(cur_df, aes(x = ldaU, y = SMAF_Fit, colour = ldaW)) + geom_point(size = 1) +
+  theme_bw() + ylim(0,1) + theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  facet_wrap(~num_blocks_W, labeller = "label_both")
+
+
+plot_grid(p1,p2,p3,p4, nrow=2)
+```
+
+### U_stability over replicates
+
+#### Read Us
+```{r read_Us}
+U_list.files <- list.files(U_path, "U*.csv")
+# sort U by expid
+idx <- lapply(U_list.files, function(x){strsplit(strsplit(x,"expid")[[1]][2],".csv")[[1]][1]})%>% 
+                                        unlist() %>% as.numeric() %>% sort(index.return = TRUE) %>% .$ix
+U_list.files <- U_list.files[idx]
+
+# read Us into list of df
+U_list <- lapply(U_list.files, function(x){read.csv(file.path(U_path,x), check.names = F, row.names = 1) })
+```
+
+#### 1. omp_fixedk
+
+```{r subset_df}
+df1 <- df[df$methodW == "omp_fixedk",]
+df1$cond <- paste0("k=",df1$k," / ldaU=",df1$ldaU)
+```
+
+##### combine results_df and U_list into one df
+```{r combine_df}
+# select necessary results
+tmp_df <- dplyr::select(df1, c(replicate,cond,expid))
+tmp_df$replicate <- as.factor(tmp_df$replicate) # to use as a group in lpcor
+# combine t(U) (modules x genes) and results (tmp_df) as one df. Matched only by their order!
+# replicate results for no. of modules, to combine with corresponding t(U)
+df_for_lpcor <- lapply(tmp_df$expid, function(expid){
+  replicate(U_list[[expid+1]] %>% ncol(), 
+            tmp_df[tmp_df$expid == expid,] %>% select(-expid), 
+            simplify = FALSE) %>% do.call("rbind",.) %>% cbind(t(U_list[[expid+1]])) 
+  }) %>% do.call("rbind",.)
+```
+
+##### U_similarity as correlations of gene correlation matrix between U replicates
+```{r cor_gcor}
+sum_df <- unique(df_for_lpcor$cond) %>% lapply(function(c){
+  # subset df for current condition
+  cur_df <- df_for_lpcor[df_for_lpcor$cond %in% c,]
+  # calc gene correlation matrix (flattened upper triangle as vector) per group ("replicate" in this case)
+  # lpcor_tb[[1]] is a vec of grouping ("replicate" in this case)
+  # lpcor_tb[[2]][[replicate]]$results[c("Pairs","linear")] is the gene pair and its correlation
+  gcor_tb <- cur_df %>% group_by(replicate) %>% lpcor() 
+  
+  # reshape correlation matrix (as vector) into (gene pairs) x ("replicates") 
+  gcor_df <- gcor_tb[[2]] %>% seq_along() %>% 
+    lapply(function(i){
+                      tmp <- gcor_tb[[2]][[i]]$results[c("Pairs","linear")] 
+                      tmp$rep <- i
+                      tmp
+                      }) %>% do.call("rbind",.) %>% pivot_wider(names_from = rep, values_from = linear)
+  
+  # calc correlation matrix for "replicates" 
+  # (= calc correlation of gene correlation matrices for all combination of replicates)
+  # cor_gcor_df is correlation vec for all "replication" pair       
+  m <- as.matrix(gcor_df[, -.(Pairs)] )
+  cor_gcor_df <- data.frame(correlation = cor(m)[upper.tri(cor(m))], condition = c) 
+  return(cor_gcor_df)
+})  %>%
+  do.call("rbind",.)
+```
+
+##### retrieve variables for plotting
+```{r add_condition_varible}
+# add individual vars
+sum_df$k <- sum_df$condition %>% sapply(function(x){ x %>%
+  strsplit("/") %>% .[[1]] %>% .[1] %>% 
+  strsplit("=") %>% .[[1]] %>% .[2] %>% as.integer() %>% as.factor()
+})
+sum_df$ldaU <- sum_df$condition %>% sapply(function(x){ x %>%
+  strsplit("/") %>% .[[1]] %>% .[2] %>% 
+  strsplit("=") %>% .[[1]] %>% .[2] %>% as.numeric() %>% as.factor()
+})
+```
+
+##### plot
+```{r plot_stability, results="asis",  fig.height = 3, fig.width = 5, fig.align = "center"}
+ggplot(sum_df, aes(x = ldaU , y = correlation) ) +
+  facet_wrap(~k, nrow = 1, labeller = "label_both" ) +
+  geom_boxplot() + geom_jitter(colour = "cyan3", size = 1, width = 0.1) + 
+  theme_bw() + ylim(0,1) +
+  theme(axis.text.x = element_text(angle=45, hjust = 1)) 
+
+```
+
+#### 2. lasso
+
+```{r subset_df2}
+df2 <- df[df$methodW == "lasso",]
+df2$cond <- paste0("ldaW=",df2$ldaW," / ldaU=",df2$ldaU," / nblocks=",df2$num_blocks_W)
+```
+
+##### combine results_df and U_list into one df
+```{r combine_df2}
+# select necessary results
+tmp_df <- dplyr::select(df2, c(replicate,cond,expid))
+tmp_df$replicate <- as.factor(tmp_df$replicate) # to use as a group in lpcor
+# combine t(U) (modules x genes) and results (tmp_df) as one df. Matched only by their order!
+# replicate results for no. of modules, to combine with corresponding t(U)
+df_for_lpcor <- lapply(tmp_df$expid, function(expid){
+  replicate(U_list[[expid+1]] %>% ncol(), 
+            tmp_df[tmp_df$expid == expid,] %>% select(-expid), 
+            simplify = FALSE) %>% do.call("rbind",.) %>% cbind(t(U_list[[expid+1]])) 
+  }) %>% do.call("rbind",.)
+```
+
+##### U_similarity as correlations of gene correlation matrix between U replicates
+```{r cor_gcor2}
+sum_df <- unique(df_for_lpcor$cond) %>% lapply(function(c){
+  # subset df for current condition
+  cur_df <- df_for_lpcor[df_for_lpcor$cond %in% c,]
+  # calc gene correlation matrix (flattened upper triangle as vector) per group ("replicate" in this case)
+  # lpcor_tb[[1]] is a vec of grouping ("replicate" in this case)
+  # lpcor_tb[[2]][[replicate]]$results[c("Pairs","linear")] is the gene pair and its correlation
+  gcor_tb <- cur_df %>% group_by(replicate) %>% lpcor() 
+  
+  # reshape correlation matrix (as vector) into (gene pairs) x ("replicates") 
+  gcor_df <- gcor_tb[[2]] %>% seq_along() %>% 
+    lapply(function(i){
+                      tmp <- gcor_tb[[2]][[i]]$results[c("Pairs","linear")] 
+                      tmp$rep <- i
+                      tmp
+                      }) %>% do.call("rbind",.) %>% pivot_wider(names_from = rep, values_from = linear)
+  
+  # calc correlation matrix for "replicates" 
+  # (= calc correlation of gene correlation matrices for all combination of replicates)
+  # cor_gcor_df is correlation vec for all "replication" pair       
+  m <- as.matrix(gcor_df[, -.(Pairs)] )
+  cor_gcor_df <- data.frame(correlation = cor(m)[upper.tri(cor(m))], condition = c) 
+  return(cor_gcor_df)
+})  %>%
+  do.call("rbind",.)
+```
+
+##### retrieve variables for plotting
+```{r add_condition_varible2}
+# add individual vars
+sum_df$ldaW <- sum_df$condition %>% sapply(function(x){ x %>%
+  strsplit("/") %>% .[[1]] %>% .[1] %>% 
+  strsplit("=") %>% .[[1]] %>% .[2] %>% as.numeric() %>% as.factor()
+})
+sum_df$ldaU <- sum_df$condition %>% sapply(function(x){ x %>%
+  strsplit("/") %>% .[[1]] %>% .[2] %>% 
+  strsplit("=") %>% .[[1]] %>% .[2] %>% as.numeric() %>% as.factor()
+})
+sum_df$num_blocks_W <- sum_df$condition %>% sapply(function(x){ x %>%
+  strsplit("/") %>% .[[1]] %>% .[3] %>% 
+  strsplit("=") %>% .[[1]] %>% .[2] %>% as.numeric() %>% as.factor()
+})
+```
+
+##### plot
+```{r plot_stability2, results="asis",  fig.height = 8, fig.width = 8, fig.align = "center"}
+ggplot(sum_df, aes(x = ldaU , y = correlation) ) +
+  facet_grid(num_blocks_W~ldaW,  labeller = "label_both" ) +
+  geom_boxplot() + geom_jitter(colour = "cyan3", size = 1, width = 0.1) + 
+  theme_bw() + ylim(0,1) +
+  theme(axis.text.x = element_text(angle=45, hjust = 1)) 
+
+
+
+```
+

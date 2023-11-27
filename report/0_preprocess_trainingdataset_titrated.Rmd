@@ -1,0 +1,112 @@
+---
+title: "0_preprocess_th184"
+author: "tsuyoshi"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    df_print: paged
+    code_folding: "hide"
+    pandoc_args: [ 
+      "--output=0_preprocess_th184.html" 
+    ]
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+
+---
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(imcRtools)
+library(zellkonverter)
+library(SingleCellExperiment)
+
+library(readr)
+library(stringr)
+library(tidyr)
+library(dplyr)
+library(common)
+```
+
+```{r specify_paths}
+# Specify input paths
+project.path <- "/mnt/projects/data/0_preprocess_th184"
+steinbock.paths <- dir.find(path = file.path(project.path,"steinbock"), pattern = "th184_*")
+
+
+meta.paths <- paste0(steinbock.paths, "/images.csv")
+images.paths <- paste0(steinbock.paths, "/img")
+
+# Specify output path
+out.path <- "/mnt/projects/data/0_preprocess_th184/processed"
+# Create output directory if id doesn't exist
+if (!dir.exists(out.path)) {dir.create(out.path, recursive=TRUE)}
+
+```
+
+```{r read_input_data}
+sces <- lapply(steinbock.paths, function(x){read_steinbock(x, graphs_folder=NULL,regionprops_folder=NULL)} ) 
+metas <- lapply(meta.paths, function(x){read_csv(x, show_col_types = FALSE)} ) 
+
+sce <- do.call("cbind",sces)
+meta <- do.call("rbind",metas)
+```
+
+
+## add tissue annotations
+Some rois were remeasured due to reduced sensitivity due to low Argon pressure durng the acquisition. In such cases, old ROIS were removed and replaced by remeasured ROI
+```{r add_tissue_annotation}
+sce$ROI_fullname <- meta$recovery_file[match(paste0(sce$sample_id,".tiff"), meta$image)] %>%
+  str_split('.txt') %>% lapply('[[', 1) %>% unlist()
+# add slide name
+sce$slide <- sce$ROI_fullname %>% str_split('_') %>% lapply('[[', 4) %>% unlist()
+# add tissue name (tissueMA2 slide contained multiple tissues)
+sce$tissue <- ifelse(sce$slide == 'tissueMA2', 
+                     sce$ROI_fullname %>% str_split('_') %>% lapply('[[', 5) %>% unlist(), sce$slide)
+table(sce$slide,sce$tissue)
+# add tissue_ROI 
+sce$tissue_ROI <- ifelse(sce$slide == 'tissueMA2', gsub(".*tissueMA2_(.*)_.*","\\1",sce$ROI_fullname),
+                         gsub(".*th184_(.*)_.*","\\1",sce$ROI_fullname) %>% gsub("ROI_00","",.))
+# # check
+# unique_tissue_ROI <- sce$tissue_ROI %>% unique()
+# unique_tissue_ROI
+
+# Remove re-measured ROI and test ROI 
+re_ROI <- unique_tissue_ROI[grepl("Re",unique_tissue_ROI)] %>% gsub("_Re","",.)
+test_ROI <- unique_tissue_ROI[grepl("test",unique_tissue_ROI)]
+sce <- sce[,!sce$tissue_ROI %in% c(re_ROI,test_ROI)]
+
+# Rename remeasured ROI as normal ROI
+sce$tissue_ROI <- gsub("_Re","",sce$tissue_ROI)
+
+# add ROI_per_tissue
+sce$ROI_per_tissue <- gsub(".*_","",sce$tissue_ROI)
+sce$ROI_per_tissue %>% unique()
+# 
+# 
+# table(sce$tissue_ROI, sce$ROI_per_tissue)
+# table(sce$tissue) %>% prop.table() 
+
+```
+
+
+```{r rename_rownames}
+rownames(sce) <- rownames(sce) %>% str_split('_') %>% lapply('[[', 1) %>% unlist() %>% 
+  gsub("Myelope","MPO",.) %>% gsub("CD3epsi","CD3",.) %>% 
+  gsub("Granzym","GranzymeB",.) %>% gsub("panCyto","panCK",.) 
+
+sce <- sce[!rownames(sce)%in%c("Histone","191Ir","193Ir"),]
+```
+
+
+```{r save_sce_as_anndata}
+writeH5AD(SingleCellExperiment(list(counts=assay(sce, "counts")),
+                                 colData=colData(sce),
+                                 rowData=rowData(sce)), file=file.path(out.path, "sce.h5ad"))
+```
+
+
+
+
+

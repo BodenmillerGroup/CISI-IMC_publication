@@ -1,0 +1,101 @@
+---
+title: "6_Finalize_SMAF_parameters"
+author: "tsuyoshi"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    df_print: paged
+    code_folding: "hide"
+    pandoc_args: [ 
+      "--output=6_Finalize_SMAF_parameters.html" 
+    ]
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+```{r library}
+library(ggplot2)
+library(cowplot)
+library(dplyr)
+library(tidyr)
+```
+
+
+### set up
+
+```{r specify_paths}
+# specify paths
+input_path <- "/mnt/projects/data/publication/6_Finalize_SMAF_parameters"
+```
+
+#### Read summary table
+```{r read_df}
+fn <- file.path(input_path,"result_U.csv")
+df_U <- read.csv(fn, header = T)
+fn <- file.path(input_path,"result_A.csv")
+df_A <- read.csv(fn, header = T)
+
+```
+
+
+```{r sum_df}
+# remove X to avoid duplicated col when combined
+if (!is.null(df_A[["X"]])) df_A <- dplyr::select(df_A,-X)
+
+# add U_cond for plotting
+df_U$U_cond <- paste(df_U$methodW, df_U$ldaU,df_U$ldaW,df_U$k,df_U$num_blocks_W, sep = "_")
+
+# make condition cols into factor 
+col_names <- c("methodW","ldaU","num_blocks_W","ldaW","k","expid")
+df_U[,col_names] <- lapply(df_U[,col_names] , factor)
+
+col_names <- c("ROI")
+df_A[,col_names] <- lapply(df_A[,col_names] , factor)
+
+# combine df_U to df_A
+df <- match(df_A$U_id,df_U$expid ) %>% df_U[.,] %>% data.frame(df_A) 
+
+df
+```
+
+
+#### decompression performance
+```{r}
+cur_df <- df[df$trainingA_ROI == "percent25",] %>%
+  pivot_longer(c("Gene_average","Gene_minimum", "Cell_average"), 
+               names_to = "correlation_type", values_to = "correlation")
+```
+
+
+```{r, results="asis",fig.height = 4, fig.width = 7, fig.align = "center"}
+cur_df %>% 
+  ggplot(aes(x = reorder(U_cond, correlation, median), y = correlation)) +
+  geom_boxplot(outlier.size = 0.3) + theme_bw() + 
+  facet_wrap(~correlation_type)+ xlab("U_condition") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) 
+
+```
+
+#### average across tissues first
+```{r}
+cur_df <- df[!df$trainingA_ROI%in%c("1","2","percent25"),] %>%
+  group_by(U_cond, A_id) %>% 
+  summarise(tissuemean_Gene_average = mean(Gene_average), 
+            tissuemean_Gene_minimum = mean(Gene_minimum),
+            tissuemean_Cell_average = mean(Cell_average, na.rm = T)) %>%
+  pivot_longer(c("tissuemean_Gene_average","tissuemean_Gene_minimum", "tissuemean_Cell_average"), 
+               names_to = "correlation_type", values_to = "correlation")
+
+```
+```{r, results="asis",fig.height = 4, fig.width = 7, fig.align = "center"}
+cur_df %>% 
+  ggplot(aes(x = reorder(U_cond, correlation, median), y = correlation)) +
+  geom_boxplot(outlier.size = 0.3) + theme_bw() + 
+  facet_wrap(~correlation_type)+xlab("U_condition") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) 
+```

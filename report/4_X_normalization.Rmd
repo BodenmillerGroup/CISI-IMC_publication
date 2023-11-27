@@ -1,0 +1,97 @@
+---
+title: "4_X_normalization"
+author: "tsuyoshi"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    df_print: paged
+    code_folding: "hide"
+    pandoc_args: [ 
+      "--output=4_X_normalization.html" 
+    ]
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+```{r library}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+
+```
+
+### set up
+
+```{r specify_paths}
+#### specify paths
+# Set general input paths to all analysis files
+input_path <- "/mnt/projects/data/publication/4_X_normalization"
+U_path <- file.path(input_path, "U")
+```
+
+#### Read summary table
+```{r read_df}
+fn <- file.path(input_path,"result_U.csv")
+df_U <- read.csv(fn, header = T)
+fn <- file.path(input_path,"result_A.csv")
+df_A <- read.csv(fn, header = T)
+
+```
+
+##### combine df_U and df_A
+```{r sum_df}
+# remove X to avoid duplicated col when combined
+if (!is.null(df_A[["X"]])) df_A <- dplyr::select(df_A,-X)
+
+# add U_cond for plotting
+df_U$U_cond <- paste(df_U$methodW, df_U$ldaU, df_U$ldaW,df_U$k,df_U$num_blocks_W, sep = "_")
+
+# make condition cols into factor 
+col_names <- c("methodW","ldaU","num_blocks_W","ldaW","k","expid")
+df_U[,col_names] <- lapply(df_U[,col_names] , factor)
+
+col_names <- c("Xnorm_weight","ROI")
+df_A[,col_names] <- lapply(df_A[,col_names] , factor)
+
+# combine df_U to df_A
+df <- match(df_A$U_id,df_U$expid ) %>% df_U[.,] %>% data.frame(df_A) 
+
+df
+```
+
+#### plot
+
+```{r, results="asis",fig.height = 7, fig.width = 8, fig.align = "center"}
+
+
+ggplot(df, aes(x = reorder(Xnorm_weight, Gene_average) , y = Gene_average )) + geom_violin(fill = 'gray') +
+  facet_wrap(~U_cond) + xlab("Normalization weight") + theme_bw() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  geom_boxplot(data = df, aes(x = reorder(Xnorm_weight, Gene_average) , y = Gene_average ), 
+               outlier.shape = NA, width= 0.1)
+
+
+ggplot(df, aes(x = reorder(Xnorm_weight, Gene_minimum) , y = Gene_minimum )) + geom_violin(fill = 'gray') +
+  facet_wrap(~U_cond) + xlab("Normalization weight") + theme_bw() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  geom_boxplot(data = df, aes(x = reorder(Xnorm_weight, Gene_minimum) , y = Gene_minimum ), 
+               outlier.shape = NA, width= 0.1)
+```
+
+```{r, results="asis",fig.height = 4, fig.width = 7, fig.align = "center"}
+ggplot(df[df$Xnorm_weight%in%c("0","0.5","1"),],
+       aes(x = reorder(U_cond, U_l0_mean) , y = Gene_average, color = U_l0_mean )) + 
+  geom_violin() + facet_wrap(~Xnorm_weight, labeller = "label_both") + xlab("U_condition") + theme_bw() + 
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
+  scale_colour_gradient(low = "blue", high = "red") +
+  geom_boxplot(data = df[df$Xnorm_weight%in%c("0","0.5","1"),], 
+               aes(x = reorder(U_cond, U_l0_mean) , y = Gene_average ), 
+               outlier.shape = NA, width= 0.1)
+```
+
